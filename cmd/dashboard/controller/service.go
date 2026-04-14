@@ -210,6 +210,18 @@ func listServerServices(c *gin.Context) ([]*model.ServiceInfos, error) {
 		return nil, err
 	}
 
+	if singleton.IsFederatedServerID(serverID) {
+		if singleton.FederationShared != nil {
+			if server, ok := singleton.FederationShared.GetServer(serverID); ok {
+				_, isMember := c.Get(model.CtxKeyAuthorizedUser)
+				if server.HideForGuest && !isMember {
+					return nil, singleton.Localizer.ErrorT("unauthorized")
+				}
+			}
+		}
+		return []*model.ServiceInfos{}, nil
+	}
+
 	m := singleton.ServerShared.GetList()
 	server, ok := m[serverID]
 	if !ok || server == nil {

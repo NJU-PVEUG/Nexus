@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestReadConfig(t *testing.T) {
@@ -145,6 +146,82 @@ func TestReadConfig(t *testing.T) {
 			if !field.Cond {
 				t.Fatalf("%s did not passed check, value: %v", field.Name, field.Value)
 			}
+		}
+
+		os.Remove(file)
+	})
+
+	t.Run("ReadFederationDefaultsAndNormalize", func(t *testing.T) {
+		const testCfg = `
+federation:
+  sources:
+    - name: alice
+      base_url: https://panel-a.example.com/
+      username: exporter
+      password: secret
+      enabled: true
+`
+
+		file := newTempConfig(t, testCfg)
+		c := &Config{}
+
+		if err := c.Read(file, nil); err != nil {
+			t.Fatalf("read federation config failed: %v", err)
+		}
+
+		if c.Federation.SyncInterval != 15*time.Second {
+			t.Fatalf("unexpected federation sync interval: %v", c.Federation.SyncInterval)
+		}
+		if c.Federation.RequestTimeout != 8*time.Second {
+			t.Fatalf("unexpected federation request timeout: %v", c.Federation.RequestTimeout)
+		}
+		if c.Federation.StaleAfter != 45*time.Second {
+			t.Fatalf("unexpected federation stale after: %v", c.Federation.StaleAfter)
+		}
+		if len(c.Federation.Sources) != 1 {
+			t.Fatalf("unexpected federation source count: %d", len(c.Federation.Sources))
+		}
+		if c.Federation.Sources[0].BaseURL != "https://panel-a.example.com" {
+			t.Fatalf("unexpected normalized base url: %q", c.Federation.Sources[0].BaseURL)
+		}
+
+		os.Remove(file)
+	})
+
+	t.Run("ReadFederationDisabledIncompleteSource", func(t *testing.T) {
+		const testCfg = `
+federation:
+  sources:
+    - name: disabled
+      enabled: false
+`
+
+		file := newTempConfig(t, testCfg)
+		c := &Config{}
+
+		if err := c.Read(file, nil); err != nil {
+			t.Fatalf("disabled federation source should not fail: %v", err)
+		}
+
+		os.Remove(file)
+	})
+
+	t.Run("ReadFederationInvalidConfig", func(t *testing.T) {
+		const testCfg = `
+federation:
+  sources:
+    - name: broken
+      base_url: ftp://panel-a.example.com
+      username: exporter
+      password: secret
+      enabled: true
+`
+
+		file := newTempConfig(t, testCfg)
+		c := &Config{}
+
+		if err := c.Read(file, nil); err == nil {
+			t.Fatal("expected invalid federation config to fail")
 		}
 
 		os.Remove(file)

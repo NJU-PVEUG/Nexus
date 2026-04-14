@@ -20,7 +20,6 @@ import (
 	ginSwagger "github.com/swaggo/gin-swagger"
 
 	"github.com/nezhahq/nezha/cmd/dashboard/controller/waf"
-	docs "github.com/nezhahq/nezha/cmd/dashboard/docs"
 	"github.com/nezhahq/nezha/model"
 	"github.com/nezhahq/nezha/pkg/utils"
 	"github.com/nezhahq/nezha/service/singleton"
@@ -35,7 +34,7 @@ func ServeWeb(frontendDist fs.FS) http.Handler {
 		pprof.Register(r)
 	}
 	if singleton.Conf.Debug {
-		log.Printf("NEZHA>> Swagger(%s) UI available at http://localhost:%d/swagger/index.html", docs.SwaggerInfo.Version, singleton.Conf.ListenPort)
+		log.Printf("NEZHA>> Swagger(%s) UI available at http://localhost:%d/swagger/index.html", singleton.Version, singleton.Conf.ListenPort)
 		r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerfiles.Handler))
 	}
 

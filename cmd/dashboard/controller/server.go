@@ -177,6 +177,10 @@ func forceUpdateServer(c *gin.Context) (*model.ServerTaskResponse, error) {
 	forceUpdateResp := new(model.ServerTaskResponse)
 
 	for _, sid := range forceUpdateServers {
+		if singleton.IsFederatedServerID(sid) {
+			forceUpdateResp.Offline = append(forceUpdateResp.Offline, sid)
+			continue
+		}
 		server, _ := singleton.ServerShared.Get(sid)
 		if server != nil && server.TaskStream != nil {
 			if !server.HasPermission(c) {
@@ -211,6 +215,9 @@ func getServerConfig(c *gin.Context) (string, error) {
 	id, err := strconv.ParseUint(idStr, 10, 64)
 	if err != nil {
 		return "", err
+	}
+	if singleton.IsFederatedServerID(id) {
+		return "", nil
 	}
 
 	s, ok := singleton.ServerShared.Get(id)
@@ -266,6 +273,10 @@ func setServerConfig(c *gin.Context) (*model.ServerTaskResponse, error) {
 	slist := singleton.ServerShared.GetList()
 	servers := make([]*model.Server, 0, len(configForm.Servers))
 	for _, sid := range configForm.Servers {
+		if singleton.IsFederatedServerID(sid) {
+			resp.Offline = append(resp.Offline, sid)
+			continue
+		}
 		if s, ok := slist[sid]; ok {
 			if !s.HasPermission(c) {
 				return nil, singleton.Localizer.ErrorT("permission denied")
@@ -405,6 +416,23 @@ func getServerMetrics(c *gin.Context) (*model.ServerMetricsResponse, error) {
 	serverID, err := strconv.ParseUint(idStr, 10, 64)
 	if err != nil {
 		return nil, err
+	}
+
+	if singleton.IsFederatedServerID(serverID) {
+		response := &model.ServerMetricsResponse{
+			ServerID:   serverID,
+			DataPoints: make([]model.ServerMetricsDataPoint, 0),
+		}
+		if singleton.FederationShared != nil {
+			if server, ok := singleton.FederationShared.GetServer(serverID); ok {
+				_, isMember := c.Get(model.CtxKeyAuthorizedUser)
+				if server.HideForGuest && !isMember {
+					return nil, singleton.Localizer.ErrorT("unauthorized")
+				}
+				response.ServerName = server.Name
+			}
+		}
+		return response, nil
 	}
 
 	server, ok := singleton.ServerShared.Get(serverID)

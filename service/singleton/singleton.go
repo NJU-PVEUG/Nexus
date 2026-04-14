@@ -29,6 +29,7 @@ var (
 	DashboardBootTime = uint64(time.Now().Unix())
 
 	ServerShared          *ServerClass
+	FederationShared      *FederationManager
 	ServiceSentinelShared *ServiceSentinel
 	DDNSShared            *DDNSClass
 	NotificationShared    *NotificationClass
@@ -60,6 +61,10 @@ func LoadSingleton(bus chan<- *model.Service) (err error) {
 	ServerShared = NewServerClass()
 	CronShared = NewCronClass()
 	// 最后初始化 ServiceSentinel
+	FederationShared, err = NewFederationManager(&Conf.Federation)
+	if err != nil {
+		return err
+	}
 	ServiceSentinelShared, err = NewServiceSentinel(bus)
 	return
 }

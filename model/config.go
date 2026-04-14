@@ -1,9 +1,12 @@
 package model
 
 import (
+	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/go-viper/mapstructure/v2"
 	kmaps "github.com/knadh/koanf/maps"
@@ -76,6 +79,8 @@ type Config struct {
 	// 内存配置
 	Memory MemoryConf `koanf:"memory" json:"memory"`
 
+	Federation FederationConfig `koanf:"federation" json:"federation,omitempty"`
+
 	k        *koanf.Koanf `json:"-"`
 	filePath string       `json:"-"`
 }
@@ -88,6 +93,22 @@ type HTTPSConf struct {
 }
 
 // TSDBConf TSDB 配置
+type FederationSource struct {
+	Name        string `koanf:"name" json:"name,omitempty"`
+	BaseURL     string `koanf:"base_url" json:"base_url,omitempty"`
+	Username    string `koanf:"username" json:"username,omitempty"`
+	Password    string `koanf:"password" json:"password,omitempty"`
+	Enabled     bool   `koanf:"enabled" json:"enabled,omitempty"`
+	InsecureTLS bool   `koanf:"insecure_tls" json:"insecure_tls,omitempty"`
+}
+
+type FederationConfig struct {
+	SyncInterval   time.Duration      `koanf:"sync_interval" json:"sync_interval,omitempty"`
+	RequestTimeout time.Duration      `koanf:"request_timeout" json:"request_timeout,omitempty"`
+	StaleAfter     time.Duration      `koanf:"stale_after" json:"stale_after,omitempty"`
+	Sources        []FederationSource `koanf:"sources" json:"sources,omitempty"`
+}
+
 type TSDBConf struct {
 	DataPath                 string  `koanf:"data_path" json:"data_path,omitempty"`
 	RetentionDays            uint16  `koanf:"retention_days" json:"retention_days,omitempty"`
@@ -159,6 +180,9 @@ func (c *Config) Read(path string, frontendTemplates []FrontendTemplate) error {
 	}
 	if c.Cover == 0 {
 		c.Cover = 1
+	}
+	if err := c.Federation.Normalize(); err != nil {
+		return err
 	}
 	if c.JWTSecretKey == "" {
 		c.JWTSecretKey, err = utils.GenerateRandomString(1024)
@@ -243,5 +267,55 @@ func mergeDedup(src, dst map[string]any) error {
 	}
 
 	kmaps.Merge(src, dst)
+	return nil
+}
+
+func (c *FederationConfig) Normalize() error {
+	if c.SyncInterval <= 0 {
+		c.SyncInterval = 15 * time.Second
+	}
+	if c.RequestTimeout <= 0 {
+		c.RequestTimeout = 8 * time.Second
+	}
+	if c.StaleAfter <= 0 {
+		c.StaleAfter = 45 * time.Second
+	}
+
+	for i := range c.Sources {
+		source := &c.Sources[i]
+		source.Name = strings.TrimSpace(source.Name)
+		source.BaseURL = strings.TrimRight(strings.TrimSpace(source.BaseURL), "/")
+		source.Username = strings.TrimSpace(source.Username)
+		source.Password = strings.TrimSpace(source.Password)
+
+		if !source.Enabled {
+			continue
+		}
+
+		if source.Name == "" {
+			return fmt.Errorf("federation source %d: name is required", i)
+		}
+		if source.BaseURL == "" {
+			return fmt.Errorf("federation source %q: base_url is required", source.Name)
+		}
+		if source.Username == "" {
+			return fmt.Errorf("federation source %q: username is required", source.Name)
+		}
+		if source.Password == "" {
+			return fmt.Errorf("federation source %q: password is required", source.Name)
+		}
+
+		parsed, err := url.Parse(source.BaseURL)
+		if err != nil {
+			return fmt.Errorf("federation source %q: invalid base_url: %w", source.Name, err)
+		}
+		if parsed.Scheme != "http" && parsed.Scheme != "https" {
+			return fmt.Errorf("federation source %q: base_url must use http or https", source.Name)
+		}
+		if parsed.Host == "" {
+			return fmt.Errorf("federation source %q: base_url host is required", source.Name)
+		}
+	}
+
 	return nil
 }
