@@ -2,41 +2,32 @@ package singleton
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"sync/atomic"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/goccy/go-json"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 
 	"github.com/nezhahq/nezha/model"
 )
 
-func TestFederationManagerSyncAndGuestFiltering(t *testing.T) {
-	token := "token-1"
+func TestFederationManagerVisibilityAndReload(t *testing.T) {
+	db, cleanup := setupFederationDB(t)
+	defer cleanup()
+
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/login":
-			writeJSON(t, w, model.CommonResponse[model.LoginResponse]{
-				Success: true,
-				Data: model.LoginResponse{
-					Token:  token,
-					Expire: time.Now().Add(time.Hour).Format(time.RFC3339),
-				},
-			})
-		case "/api/v1/server":
-			if r.Header.Get("Authorization") != "Bearer "+token {
-				writeJSON(t, w, model.CommonResponse[any]{Success: false, Error: "ApiErrorUnauthorized"})
-				return
-			}
-			writeJSON(t, w, model.CommonResponse[[]model.Server]{
+		case "/public/api/v1/server":
+			writeFederationJSON(t, w, model.CommonResponse[[]model.Server]{
 				Success: true,
 				Data: []model.Server{
 					{
 						Common:       model.Common{ID: 7},
-						Name:         "guest-visible",
+						Name:         "public-visible",
 						DisplayIndex: 3,
 						Host:         &model.Host{Platform: "linux"},
 						State:        &model.HostState{CPU: 12},
@@ -44,8 +35,8 @@ func TestFederationManagerSyncAndGuestFiltering(t *testing.T) {
 					},
 					{
 						Common:       model.Common{ID: 8},
-						Name:         "guest-hidden",
-						DisplayIndex: 1,
+						Name:         "public-hidden",
+						DisplayIndex: 2,
 						HideForGuest: true,
 						Host:         &model.Host{Platform: "linux"},
 						State:        &model.HostState{CPU: 24},
@@ -53,86 +44,16 @@ func TestFederationManagerSyncAndGuestFiltering(t *testing.T) {
 					},
 				},
 			})
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer upstream.Close()
-
-	conf := model.FederationConfig{
-		RequestTimeout: 2 * time.Second,
-		StaleAfter:     40 * time.Millisecond,
-		Sources: []model.FederationSource{{
-			Name:     "alice",
-			BaseURL:  upstream.URL,
-			Username: "exporter",
-			Password: "secret",
-			Enabled:  true,
-		}},
-	}
-
-	manager, err := NewFederationManager(&conf)
-	if err != nil {
-		t.Fatalf("create manager failed: %v", err)
-	}
-	if err := manager.Sync(context.Background()); err != nil {
-		t.Fatalf("sync manager failed: %v", err)
-	}
-
-	authorized := manager.GetActiveServers(true)
-	if len(authorized) != 2 {
-		t.Fatalf("expected 2 authorized servers, got %d", len(authorized))
-	}
-	if !IsFederatedServerID(authorized[0].ID) || !IsFederatedServerID(authorized[1].ID) {
-		t.Fatal("expected federated synthetic IDs")
-	}
-	if _, ok := manager.Lookup(authorized[0].ID); !ok {
-		t.Fatal("expected lookup entry for federated server")
-	}
-
-	guest := manager.GetActiveServers(false)
-	if len(guest) != 1 {
-		t.Fatalf("expected 1 guest-visible server, got %d", len(guest))
-	}
-	if guest[0].Name != "guest-visible" {
-		t.Fatalf("unexpected guest-visible server: %s", guest[0].Name)
-	}
-
-	manager.mu.Lock()
-	manager.sources[0].lastSync = time.Now().Add(-time.Second)
-	manager.mu.Unlock()
-	if stale := manager.GetActiveServers(true); len(stale) != 0 {
-		t.Fatalf("expected stale source to be hidden, got %d servers", len(stale))
-	}
-}
-
-func TestFederationManagerReauthOnUnauthorized(t *testing.T) {
-	var loginCount atomic.Int32
-
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/v1/login":
-			n := loginCount.Add(1)
-			writeJSON(t, w, model.CommonResponse[model.LoginResponse]{
-				Success: true,
-				Data: model.LoginResponse{
-					Token:  fmt.Sprintf("token-%d", n),
-					Expire: time.Now().Add(time.Hour).Format(time.RFC3339),
-				},
-			})
-		case "/api/v1/server":
-			if r.Header.Get("Authorization") != "Bearer token-2" {
-				writeJSON(t, w, model.CommonResponse[any]{Success: false, Error: "ApiErrorUnauthorized"})
-				return
-			}
-			writeJSON(t, w, model.CommonResponse[[]model.Server]{
+		case "/private/api/v1/server":
+			writeFederationJSON(t, w, model.CommonResponse[[]model.Server]{
 				Success: true,
 				Data: []model.Server{{
-					Common: model.Common{ID: 9},
-					Name:   "reauth-ok",
-					Host:   &model.Host{},
-					State:  &model.HostState{},
-					GeoIP:  &model.GeoIP{},
+					Common:       model.Common{ID: 9},
+					Name:         "private-only",
+					DisplayIndex: 4,
+					Host:         &model.Host{Platform: "linux"},
+					State:        &model.HostState{CPU: 36},
+					GeoIP:        &model.GeoIP{CountryCode: "DE"},
 				}},
 			})
 		default:
@@ -141,155 +62,216 @@ func TestFederationManagerReauthOnUnauthorized(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	conf := model.FederationConfig{
-		RequestTimeout: time.Second,
-		StaleAfter:     time.Second,
-		Sources: []model.FederationSource{{
-			Name:     "reauth",
-			BaseURL:  upstream.URL,
-			Username: "exporter",
-			Password: "secret",
-			Enabled:  true,
-		}},
+	publicSource := model.FederationSource{
+		OwnerUserID:    1,
+		BaseURL:        upstream.URL + "/public",
+		SiteName:       "Public Child",
+		Provider:       "GitHub",
+		RemoteUserID:   "viewer-public",
+		RemoteUsername: "alice",
+		Token:          "token-public",
+		TokenExpiresAt: time.Now().Add(time.Hour),
+		Enabled:        true,
+		IsPublic:       true,
+	}
+	privateSource := model.FederationSource{
+		OwnerUserID:    1,
+		BaseURL:        upstream.URL + "/private",
+		SiteName:       "Private Child",
+		Provider:       "GitHub",
+		RemoteUserID:   "viewer-private",
+		RemoteUsername: "alice",
+		Token:          "token-private",
+		TokenExpiresAt: time.Now().Add(time.Hour),
+		Enabled:        true,
+		IsPublic:       false,
+	}
+	if err := db.Create(&publicSource).Error; err != nil {
+		t.Fatalf("create public federation source failed: %v", err)
+	}
+	if err := db.Create(&privateSource).Error; err != nil {
+		t.Fatalf("create private federation source failed: %v", err)
 	}
 
-	manager, err := NewFederationManager(&conf)
+	manager, err := NewFederationManager(&model.FederationConfig{
+		RequestTimeout: time.Second,
+		StaleAfter:     50 * time.Millisecond,
+	})
 	if err != nil {
-		t.Fatalf("create manager failed: %v", err)
+		t.Fatalf("create federation manager failed: %v", err)
 	}
 	if err := manager.Sync(context.Background()); err != nil {
-		t.Fatalf("expected reauth sync to succeed: %v", err)
+		t.Fatalf("sync federation manager failed: %v", err)
 	}
-	if loginCount.Load() != 2 {
-		t.Fatalf("expected 2 logins, got %d", loginCount.Load())
+
+	owner := &model.User{Common: model.Common{ID: 1}}
+	other := &model.User{Common: model.Common{ID: 2}}
+
+	if names := serverNames(manager.GetActiveServers(nil)); !equalStringSlices(names, []string{"public-visible", "public-hidden"}) {
+		t.Fatalf("unexpected guest-visible servers: %#v", names)
 	}
-	if len(manager.GetActiveServers(true)) != 1 {
-		t.Fatal("expected synced server after reauth")
+	if names := serverNames(manager.GetActiveServers(owner)); !equalStringSlices(names, []string{"private-only", "public-visible", "public-hidden"}) {
+		t.Fatalf("unexpected owner-visible servers: %#v", names)
+	}
+	if names := serverNames(manager.GetActiveServers(other)); !equalStringSlices(names, []string{"public-visible", "public-hidden"}) {
+		t.Fatalf("unexpected other-user-visible servers: %#v", names)
+	}
+
+	var privateID uint64
+	for _, server := range manager.GetActiveServers(owner) {
+		if server.Name == "private-only" {
+			privateID = server.ID
+			break
+		}
+	}
+	if privateID == 0 {
+		t.Fatal("expected synthetic ID for private server")
+	}
+	if _, ok := manager.GetVisibleServer(privateID, owner); !ok {
+		t.Fatal("expected owner to resolve private server")
+	}
+	if _, ok := manager.GetVisibleServer(privateID, other); ok {
+		t.Fatal("did not expect other user to resolve private server")
+	}
+
+	if err := db.Model(&model.FederationSource{}).Where("id = ?", publicSource.ID).Update("enabled", false).Error; err != nil {
+		t.Fatalf("disable public source failed: %v", err)
+	}
+	if err := manager.Reload(); err != nil {
+		t.Fatalf("reload federation manager failed: %v", err)
+	}
+	if names := serverNames(manager.GetActiveServers(nil)); len(names) != 0 {
+		t.Fatalf("expected no guest-visible servers after disabling public source, got %#v", names)
+	}
+	if names := serverNames(manager.GetActiveServers(owner)); !equalStringSlices(names, []string{"private-only"}) {
+		t.Fatalf("unexpected owner-visible servers after reload: %#v", names)
+	}
+
+	manager.mu.Lock()
+	if runtime, ok := manager.sources[privateSource.ID]; ok {
+		runtime.source.LastSyncAt = time.Now().Add(-time.Second)
+	}
+	manager.mu.Unlock()
+	if names := serverNames(manager.GetActiveServers(owner)); len(names) != 0 {
+		t.Fatalf("expected stale private source to disappear, got %#v", names)
 	}
 }
 
-func TestFederationManagerErrorCases(t *testing.T) {
-	t.Run("bad JSON", func(t *testing.T) {
-		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			switch r.URL.Path {
-			case "/api/v1/login":
-				writeJSON(t, w, model.CommonResponse[model.LoginResponse]{
-					Success: true,
-					Data: model.LoginResponse{
-						Token:  "token-1",
-						Expire: time.Now().Add(time.Hour).Format(time.RFC3339),
-					},
-				})
-			case "/api/v1/server":
-				w.WriteHeader(http.StatusOK)
-				w.Write([]byte("{"))
-			default:
-				http.NotFound(w, r)
-			}
-		}))
-		defer upstream.Close()
+func TestFederationManagerRefreshUnauthorizedMarksReauth(t *testing.T) {
+	db, cleanup := setupFederationDB(t)
+	defer cleanup()
 
-		manager, err := NewFederationManager(&model.FederationConfig{
-			RequestTimeout: time.Second,
-			StaleAfter:     time.Second,
-			Sources: []model.FederationSource{{
-				Name:     "bad-json",
-				BaseURL:  upstream.URL,
-				Username: "exporter",
-				Password: "secret",
-				Enabled:  true,
-			}},
-		})
-		if err != nil {
-			t.Fatalf("create manager failed: %v", err)
-		}
-		if err := manager.Sync(context.Background()); err == nil {
-			t.Fatal("expected bad JSON sync to fail")
-		}
-	})
-
-	t.Run("timeout", func(t *testing.T) {
-		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			time.Sleep(150 * time.Millisecond)
-			writeJSON(t, w, model.CommonResponse[model.LoginResponse]{
-				Success: true,
-				Data: model.LoginResponse{
-					Token:  "token-1",
-					Expire: time.Now().Add(time.Hour).Format(time.RFC3339),
-				},
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/reauth/api/v1/refresh-token":
+			writeFederationJSON(t, w, model.CommonResponse[model.LoginResponse]{
+				Success: false,
+				Error:   "ApiErrorUnauthorized",
 			})
-		}))
-		defer upstream.Close()
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
 
-		manager, err := NewFederationManager(&model.FederationConfig{
-			RequestTimeout: 50 * time.Millisecond,
-			StaleAfter:     time.Second,
-			Sources: []model.FederationSource{{
-				Name:     "timeout",
-				BaseURL:  upstream.URL,
-				Username: "exporter",
-				Password: "secret",
-				Enabled:  true,
-			}},
-		})
-		if err != nil {
-			t.Fatalf("create manager failed: %v", err)
-		}
-		if err := manager.Sync(context.Background()); err == nil {
-			t.Fatal("expected timeout sync to fail")
-		}
+	source := model.FederationSource{
+		OwnerUserID:    1,
+		BaseURL:        upstream.URL + "/reauth",
+		SiteName:       "Expiring Child",
+		Provider:       "GitHub",
+		RemoteUserID:   "viewer-expiring",
+		RemoteUsername: "alice",
+		Token:          "token-expiring",
+		TokenExpiresAt: time.Now().Add(5 * time.Second),
+		Enabled:        true,
+		IsPublic:       true,
+	}
+	if err := db.Create(&source).Error; err != nil {
+		t.Fatalf("create federation source failed: %v", err)
+	}
+
+	manager, err := NewFederationManager(&model.FederationConfig{
+		RequestTimeout: time.Second,
+		StaleAfter:     time.Second,
 	})
+	if err != nil {
+		t.Fatalf("create federation manager failed: %v", err)
+	}
 
-	t.Run("self signed tls", func(t *testing.T) {
-		upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			switch r.URL.Path {
-			case "/api/v1/login":
-				writeJSON(t, w, model.CommonResponse[model.LoginResponse]{
-					Success: true,
-					Data: model.LoginResponse{
-						Token:  "token-1",
-						Expire: time.Now().Add(time.Hour).Format(time.RFC3339),
-					},
-				})
-			case "/api/v1/server":
-				writeJSON(t, w, model.CommonResponse[[]model.Server]{
-					Success: true,
-					Data: []model.Server{{
-						Common: model.Common{ID: 10},
-						Name:   "tls-ok",
-						Host:   &model.Host{},
-						State:  &model.HostState{},
-						GeoIP:  &model.GeoIP{},
-					}},
-				})
-			default:
-				http.NotFound(w, r)
-			}
-		}))
-		defer upstream.Close()
+	if err := manager.Sync(context.Background()); err == nil {
+		t.Fatal("expected sync to fail when refresh is unauthorized")
+	}
 
-		manager, err := NewFederationManager(&model.FederationConfig{
-			RequestTimeout: time.Second,
-			StaleAfter:     time.Second,
-			Sources: []model.FederationSource{{
-				Name:        "tls",
-				BaseURL:     upstream.URL,
-				Username:    "exporter",
-				Password:    "secret",
-				Enabled:     true,
-				InsecureTLS: true,
-			}},
-		})
-		if err != nil {
-			t.Fatalf("create manager failed: %v", err)
-		}
-		if err := manager.Sync(context.Background()); err != nil {
-			t.Fatalf("expected self-signed tls sync to succeed: %v", err)
-		}
-	})
+	var refreshed model.FederationSource
+	if err := db.First(&refreshed, source.ID).Error; err != nil {
+		t.Fatalf("reload federation source failed: %v", err)
+	}
+	if !refreshed.ReauthRequired {
+		t.Fatal("expected reauth_required to be set after unauthorized refresh")
+	}
+	if refreshed.Token != "" {
+		t.Fatalf("expected token to be cleared, got %q", refreshed.Token)
+	}
+	if len(manager.GetActiveServers(nil)) != 0 {
+		t.Fatal("expected reauth source to be hidden from realtime list")
+	}
 }
 
-func writeJSON(t *testing.T, w http.ResponseWriter, payload any) {
+func setupFederationDB(t *testing.T) (*gorm.DB, func()) {
+	t.Helper()
+
+	tempDB, err := os.CreateTemp(t.TempDir(), "nezha-federation-*.db")
+	if err != nil {
+		t.Fatalf("create temp db failed: %v", err)
+	}
+	tempDB.Close()
+
+	db, err := gorm.Open(sqlite.Open(tempDB.Name()), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open temp db failed: %v", err)
+	}
+	if err := db.AutoMigrate(&model.FederationSource{}); err != nil {
+		t.Fatalf("migrate federation source failed: %v", err)
+	}
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("unwrap sql db failed: %v", err)
+	}
+
+	prevDB := DB
+	prevCron := CronShared
+	DB = db
+	CronShared = nil
+
+	return db, func() {
+		DB = prevDB
+		CronShared = prevCron
+		_ = sqlDB.Close()
+	}
+}
+
+func serverNames(servers []*model.Server) []string {
+	names := make([]string, 0, len(servers))
+	for _, server := range servers {
+		names = append(names, server.Name)
+	}
+	return names
+}
+
+func equalStringSlices(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func writeFederationJSON(t *testing.T, w http.ResponseWriter, payload any) {
 	t.Helper()
 
 	w.Header().Set("Content-Type", "application/json")

@@ -19,7 +19,9 @@ const (
 )
 
 const (
-	CacheKeyOauth2State = "cko2s::"
+	CacheKeyOauth2State     = "cko2s::"
+	CacheKeyFederationState = "ckfed::"
+	CacheKeyFederationGrant = "ckfedgrant::"
 )
 
 type CtxKeyRealIP struct{}

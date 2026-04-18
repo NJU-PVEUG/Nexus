@@ -94,7 +94,7 @@ func InitDBFromPath(path string) error {
 		model.Notification{}, model.AlertRule{}, model.Service{}, model.NotificationGroupNotification{},
 		model.Cron{}, model.Transfer{}, model.ServerGroupServer{},
 		model.NAT{}, model.DDNSProfile{}, model.NotificationGroupNotification{},
-		model.WAF{}, model.Oauth2Bind{})
+		model.WAF{}, model.Oauth2Bind{}, model.FederationSource{})
 	if err != nil {
 		return err
 	}

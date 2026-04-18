@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -172,6 +173,36 @@ func oauth2callback(jwtConfig *jwt.GinJWTMiddleware) func(c *gin.Context) (any, 
 			if result.Error != nil {
 				return nil, newGormError("%v", result.Error)
 			}
+		case model.RTypeFederationGrant:
+			if state.FederationCallbackURL == "" || state.FederationState == "" {
+				return nil, singleton.Localizer.ErrorT("invalid federation callback")
+			}
+			if err := singleton.DB.Where("provider = ? AND open_id = ?", state.Provider, openId).First(&bind).Error; err != nil {
+				return nil, singleton.Localizer.ErrorT("oauth2 user not binded yet")
+			}
+
+			randomString, err := utils.GenerateRandomString(32)
+			if err != nil {
+				return nil, err
+			}
+			singleton.Cache.Set(fmt.Sprintf("%s%s", model.CacheKeyFederationGrant, randomString), &model.FederationGrant{
+				UserID:       bind.UserID,
+				Provider:     state.Provider,
+				OpenID:       openId,
+				RemoteUserID: openId,
+			}, cache.DefaultExpiration)
+
+			redirectURL, err := url.Parse(state.FederationCallbackURL)
+			if err != nil {
+				return nil, singleton.Localizer.ErrorT("invalid federation callback")
+			}
+			query := redirectURL.Query()
+			query.Set("state", state.FederationState)
+			query.Set("code", randomString)
+			redirectURL.RawQuery = query.Encode()
+
+			c.Redirect(http.StatusFound, redirectURL.String())
+			return nil, errNoop
 		default:
 			if err := singleton.DB.Where("provider = ? AND open_id = ?", state.Provider, openId).First(&bind).Error; err != nil {
 				return nil, singleton.Localizer.ErrorT("oauth2 user not binded yet")

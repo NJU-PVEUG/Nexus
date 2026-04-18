@@ -424,12 +424,10 @@ func getServerMetrics(c *gin.Context) (*model.ServerMetricsResponse, error) {
 			DataPoints: make([]model.ServerMetricsDataPoint, 0),
 		}
 		if singleton.FederationShared != nil {
-			if server, ok := singleton.FederationShared.GetServer(serverID); ok {
-				_, isMember := c.Get(model.CtxKeyAuthorizedUser)
-				if server.HideForGuest && !isMember {
-					return nil, singleton.Localizer.ErrorT("unauthorized")
-				}
+			if server, ok := singleton.FederationShared.GetVisibleServer(serverID, currentViewer(c)); ok {
 				response.ServerName = server.Name
+			} else {
+				return nil, singleton.Localizer.ErrorT("server not found")
 			}
 		}
 		return response, nil

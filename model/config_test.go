@@ -154,12 +154,7 @@ func TestReadConfig(t *testing.T) {
 	t.Run("ReadFederationDefaultsAndNormalize", func(t *testing.T) {
 		const testCfg = `
 federation:
-  sources:
-    - name: alice
-      base_url: https://panel-a.example.com/
-      username: exporter
-      password: secret
-      enabled: true
+  sync_interval: 20s
 `
 
 		file := newTempConfig(t, testCfg)
@@ -169,7 +164,7 @@ federation:
 			t.Fatalf("read federation config failed: %v", err)
 		}
 
-		if c.Federation.SyncInterval != 15*time.Second {
+		if c.Federation.SyncInterval != 20*time.Second {
 			t.Fatalf("unexpected federation sync interval: %v", c.Federation.SyncInterval)
 		}
 		if c.Federation.RequestTimeout != 8*time.Second {
@@ -178,40 +173,16 @@ federation:
 		if c.Federation.StaleAfter != 45*time.Second {
 			t.Fatalf("unexpected federation stale after: %v", c.Federation.StaleAfter)
 		}
-		if len(c.Federation.Sources) != 1 {
-			t.Fatalf("unexpected federation source count: %d", len(c.Federation.Sources))
-		}
-		if c.Federation.Sources[0].BaseURL != "https://panel-a.example.com" {
-			t.Fatalf("unexpected normalized base url: %q", c.Federation.Sources[0].BaseURL)
-		}
 
 		os.Remove(file)
 	})
 
-	t.Run("ReadFederationDisabledIncompleteSource", func(t *testing.T) {
+	t.Run("ReadFederationLegacyConfigFails", func(t *testing.T) {
 		const testCfg = `
 federation:
   sources:
-    - name: disabled
-      enabled: false
-`
-
-		file := newTempConfig(t, testCfg)
-		c := &Config{}
-
-		if err := c.Read(file, nil); err != nil {
-			t.Fatalf("disabled federation source should not fail: %v", err)
-		}
-
-		os.Remove(file)
-	})
-
-	t.Run("ReadFederationInvalidConfig", func(t *testing.T) {
-		const testCfg = `
-federation:
-  sources:
-    - name: broken
-      base_url: ftp://panel-a.example.com
+    - name: alice
+      base_url: https://panel-a.example.com
       username: exporter
       password: secret
       enabled: true
@@ -221,7 +192,7 @@ federation:
 		c := &Config{}
 
 		if err := c.Read(file, nil); err == nil {
-			t.Fatal("expected invalid federation config to fail")
+			t.Fatal("expected legacy federation config to fail")
 		}
 
 		os.Remove(file)

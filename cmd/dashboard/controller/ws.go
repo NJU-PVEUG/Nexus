@@ -121,6 +121,7 @@ func serverStream(c *gin.Context) (any, error) {
 	}
 
 	u, isMember := c.Get(model.CtxKeyAuthorizedUser)
+	viewer := currentViewer(c)
 	var userId uint64
 	if isMember {
 		userId = u.(*model.User).ID
@@ -136,7 +137,7 @@ func serverStream(c *gin.Context) (any, error) {
 
 	count := 0
 	for {
-		stat, err := getServerStat(count == 0, isMember)
+		stat, err := getServerStat(count == 0, viewer)
 		if err != nil {
 			continue
 		}
@@ -157,9 +158,15 @@ func serverStream(c *gin.Context) (any, error) {
 
 var requestGroup singleflight.Group
 
-func getServerStat(withPublicNote, authorized bool) ([]byte, error) {
-	v, err, _ := requestGroup.Do(fmt.Sprintf("serverStats::%t", authorized), func() (any, error) {
-		serverList := singleton.GetRealtimeServerList(authorized)
+func getServerStat(withPublicNote bool, viewer *model.User) ([]byte, error) {
+	viewerID := uint64(0)
+	authorized := viewer != nil
+	if viewer != nil {
+		viewerID = viewer.ID
+	}
+
+	v, err, _ := requestGroup.Do(fmt.Sprintf("serverStats::%d::%t", viewerID, withPublicNote), func() (any, error) {
+		serverList := singleton.GetRealtimeServerList(viewer)
 
 		servers := make([]model.StreamServer, 0, len(serverList))
 		for _, server := range serverList {

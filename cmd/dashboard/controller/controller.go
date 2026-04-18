@@ -58,11 +58,15 @@ func routers(r *gin.Engine, frontendDist fs.FS) {
 	api := r.Group("api/v1")
 	api.POST("/login", authMiddleware.LoginHandler)
 	api.GET("/oauth2/:provider", commonHandler(oauth2redirect))
+	api.GET("/federation/providers", commonHandler(listFederationProviders))
+	api.GET("/federation/oauth2/:provider", commonHandler(federationOauth2Redirect))
+	api.POST("/federation/exchange", commonHandler(federationExchange(authMiddleware)))
 
 	fallbackAuthMw := fallbackAuthMiddleware(authMiddleware)
 	fallbackAuth := api.Group("", fallbackAuthMw)
 	fallbackAuth.GET("/setting", commonHandler(listConfig))
 	fallbackAuth.GET("/oauth2/callback", commonHandler(oauth2callback(authMiddleware)))
+	fallbackAuth.GET("/federation/callback", commonHandler(federationCallback))
 
 	authMw := authMiddleware.MiddlewareFunc()
 	optionalAuthMw := utils.IfOr(singleton.Conf.ForceAuth, authMw, fallbackAuthMw)
@@ -90,6 +94,11 @@ func routers(r *gin.Engine, frontendDist fs.FS) {
 	auth.GET("/profile", commonHandler(getProfile))
 	auth.POST("/profile", commonHandler(updateProfile))
 	auth.POST("/oauth2/:provider/unbind", commonHandler(unbindOauth2))
+	auth.GET("/federation/source", commonHandler(listFederationSource))
+	auth.POST("/federation/source/discover", commonHandler(discoverFederationSource))
+	auth.POST("/federation/source/start", commonHandler(startFederationSource))
+	auth.PATCH("/federation/source/:id", commonHandler(updateFederationSource))
+	auth.DELETE("/federation/source/:id", commonHandler(deleteFederationSource))
 
 	auth.GET("/user", adminHandler(listUser))
 	auth.POST("/user", adminHandler(createUser))
@@ -153,6 +162,8 @@ func routers(r *gin.Engine, frontendDist fs.FS) {
 	auth.PATCH("/setting", adminHandler(updateConfig))
 	auth.POST("/maintenance", adminHandler(runMaintenance))
 
+	r.GET("/dashboard/profile/federation", fallbackAuthMw, federationPage)
+	r.GET("/dashboard/federation", fallbackAuthMw, federationPage)
 	r.NoRoute(fallbackToFrontend(frontendDist))
 }
 

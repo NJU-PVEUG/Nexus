@@ -14,11 +14,14 @@ const (
 	_ Oauth2LoginType = iota
 	RTypeLogin
 	RTypeBind
+	RTypeFederationGrant
 )
 
 type Oauth2State struct {
-	Action      Oauth2LoginType
-	Provider    string
-	State       string
-	RedirectURL string
+	Action                Oauth2LoginType
+	Provider              string
+	State                 string
+	RedirectURL           string
+	FederationCallbackURL string
+	FederationState       string
 }
